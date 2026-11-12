@@ -66,7 +66,7 @@ def convert_data(source_dir: Path, output_dir: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-dir", type=Path, default=PROJECT_ROOT.parent / "recurtransformer" / "data")
+    parser.add_argument("--source-dir", type=Path, default=PROJECT_ROOT / "data")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "artifacts" / "fineweb-edu")
     args = parser.parse_args()
     try:
