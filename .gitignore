@@ -1,0 +1,26 @@
+# Local environments and caches
+.venv/
+.cache/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+
+# Datasets and training outputs
+/data/
+/artifacts/
+/runs/
+*.parquet
+*.safetensors
+*.log
+
+# Local tests and benchmarks
+/tests/
+/configs/smoke/
+/examples/smoke/
+/recur_model/smoke.py
+/recur_model/benchmark_fa2.py
+
+# Local task notes
+/mission.md
