@@ -33,7 +33,7 @@ export HF_HUB_DISABLE_XET=1
 .venv/bin/python -m recur_model.prepare configs/attnres-50m.json artifacts/attnres-50m --cutoff-len 2048
 ```
 
-下载脚本默认将最多 20 亿训练 token 和 1000 万验证 token 分别写入 `data/train` 和 `data/valid`。用 `--tokens` 和 `--valid-tokens` 修改下载量，`--valid-tokens 0` 跳过验证集下载。转换脚本默认从 `data/` 读取分片，将结果写入 `artifacts/fineweb-edu/`。
+下载脚本默认将最多 20 亿训练 token 和 1000 万验证 token 分别写入 `data/train` 和 `data/valid`。用 `--tokens` 和 `--valid-tokens` 修改下载量，`--valid-tokens 0` 跳过验证集下载。转换脚本默认从 `data/` 读取分片，将结果写入 `artifact/data/fineweb-edu/`。
 
 将以下配置保存为 `train.yaml`，再运行 `.venv/bin/python -m recur_model.train train.yaml`。只转换了训练集时，省略 `eval_dataset` 和 `do_eval`。
 
@@ -45,7 +45,7 @@ stage: pt
 finetuning_type: full
 do_train: true
 do_eval: true
-dataset_dir: artifacts/fineweb-edu
+dataset_dir: artifact/data/fineweb-edu
 dataset: fineweb_edu_train
 eval_dataset: fineweb_edu_valid
 cutoff_len: 2048

@@ -9,6 +9,7 @@ __pycache__/
 
 # Datasets and training outputs
 /data/
+/artifact/data/
 /artifacts/
 /runs/
 *.parquet
