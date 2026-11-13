@@ -4,14 +4,23 @@
 
 ## 安装
 
-在 WSL Ubuntu 26.04 下进入仓库根目录，使用 `uv` 建立独立环境。
+在 WSL 或云端 Ubuntu 的 Bash 终端使用 `uv` 安装。首次检出时运行以下命令。
 
 ```bash
-git submodule update --init
+git clone --recurse-submodules https://github.com/yuitoryu/recur2.git
+cd recur2
 bash scripts/setup-wsl.sh
 ```
 
-子模块固定在 LLaMA-Factory v0.9.5（`7af909522a951e3ad9f022ea6f88b6755257eaa5`）。安装脚本使用 Python 3.11、PyTorch 2.8.0 + CUDA 12.8 和 Transformers 4.57.6，需要支持 CUDA 12.8 的 NVIDIA 驱动。可通过 `RECUR_PYTHON` 指定已有的 Python 3.11 路径，或通过 `UV_BIN` 指定 `uv`。
+已有云端副本时，在仓库根目录更新主仓库、同步子模块地址，再安装依赖。安装脚本会将两个子模块检出到主仓库记录的提交。
+
+```bash
+git pull --ff-only
+git submodule sync --recursive
+bash scripts/setup-wsl.sh
+```
+
+训练使用 LLaMA-Factory v0.9.5，benchmark 评测使用 LM Evaluation Harness v0.4.13。安装脚本从两个子模块以 editable 模式安装到同一个 `.venv`。环境使用 Python 3.11、PyTorch 2.8.0 + CUDA 12.8 和 Transformers 4.57.6，需要支持 CUDA 12.8 的 NVIDIA 驱动。可通过 `RECUR_PYTHON` 指定已有的 Python 3.11 路径，或通过 `UV_BIN` 指定 `uv`。
 
 `requirements-wsl.lock` 记录 Ubuntu 26.04、Python 3.11.18 环境中的实际依赖版本。安装脚本会优先使用这个锁定文件。
 
@@ -59,6 +68,28 @@ output_dir: runs/attnres-50m
 示例沿用 50,257 个 GPT-2 token，并复用 EOS 作为 padding。LLaMA-Factory v0.9.5 的 PT collator 会把所有与 pad ID 相同的目标标为忽略，因此此配置的 loss/PPL 不计 EOS。批量生成请使用左 padding 并传入 `attention_mask`。生成会重算完整上下文，使用 `use_cache=False`。
 
 训练保存的 checkpoint 包含用于重建模型的配置和代码。用 `AutoModelForCausalLM.from_pretrained(checkpoint, trust_remote_code=True)` 直接载入模型。LLaMA-Factory 从 checkpoint 开始一项新训练时，使用 checkpoint 作为 `model_name_or_path` 并设 `train_from_scratch: false`。恢复同一项训练时，保留原 YAML 和训练计划，并用 `resume_from_checkpoint` 指定要恢复的 checkpoint。
+
+## Benchmark 评测
+
+在仓库根目录运行。将 `checkpoint` 指向含模型权重和 tokenizer 的训练输出目录。下面用 HellaSwag 的 5 道题验证 checkpoint 能否加载和评分。
+
+```bash
+export HF_HOME="$PWD/.cache/huggingface"
+checkpoint="$PWD/runs/attnres-50m"
+
+.venv/bin/lm-eval run \
+  --model hf \
+  --model_args "pretrained=$checkpoint,trust_remote_code=True,backend=causal,dtype=float32" \
+  --tasks hellaswag \
+  --num_fewshot 0 \
+  --limit 5 \
+  --batch_size 1 \
+  --device cuda:0 \
+  --output_path runs/lm-eval/hellaswag-smoke \
+  --log_samples
+```
+
+lm-eval 会读取 checkpoint 的上下文上限，给每道题的四个续写选项计算对数似然。结果 JSON 包含准确率，样本 JSONL 保存每道题的输入、答案和分数。正式评测时去掉 `--limit 5` 并使用独立的输出目录。可以用 `--tasks mmlu ceval-valid cmmlu` 运行这些多选任务，按实验协议设置 few-shot 数。GSM8K 等生成任务需要另行适配，因为 lm-eval 的 HF 生成后端会启用本模型不支持的 KV cache。
 
 ## FlashAttention-2
 

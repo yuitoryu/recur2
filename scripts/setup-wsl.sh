@@ -12,9 +12,8 @@ export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$PWD/.cache/python}"
 export UV_LINK_MODE="${UV_LINK_MODE:-hardlink}"
 
 factory=third_party/LLaMA-Factory
-if [[ ! -f "$factory/pyproject.toml" ]]; then
-    git submodule update --init -- "$factory"
-fi
+harness=third_party/lm-evaluation-harness
+git submodule update --init --recursive -- "$factory" "$harness"
 if [[ ! -x .venv/bin/python ]]; then
     "$uv_bin" venv --python "${RECUR_PYTHON:-3.11}" .venv
 fi
@@ -30,9 +29,10 @@ fi
 "$uv_bin" pip install --python .venv/bin/python \
     --index https://download.pytorch.org/whl/cu128 \
     --index-strategy unsafe-first-match \
-    --constraint "$requirements" --editable "$factory"
+    --constraint "$requirements" --editable "$factory" --editable "$harness"
 if [[ ${1:-} == --fa2 ]]; then
     "$uv_bin" pip install --python .venv/bin/python --no-deps --requirements requirements-fa2-wsl.txt
 fi
 "$uv_bin" pip check --python .venv/bin/python
 .venv/bin/llamafactory-cli version
+.venv/bin/python -c 'from importlib.metadata import version; print("lm-eval", version("lm-eval"))'
