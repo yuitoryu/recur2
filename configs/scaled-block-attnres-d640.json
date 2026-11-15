@@ -1,0 +1,14 @@
+{
+  "name": "scaled-block-attnres-d640",
+  "use_model": "RecurrentTransformerScaledBlockAttnRes",
+  "d_model": 640,
+  "nhead": 8,
+  "dim_feedforward": 2560,
+  "activation": "relu",
+  "max_seq_len": 2048,
+  "vocab_size": 50257,
+  "recur_pattern": [[2, 1], [6, 3], [2, 1]],
+  "block_size": 4,
+  "residual_scale_base": 1.0,
+  "residual_depth_base": 6
+}

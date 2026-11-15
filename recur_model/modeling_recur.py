@@ -85,15 +85,16 @@ class ScaledDepthResidualLayer(DepthResidualLayer):
     """Scale each new branch before block accumulation and depth attention.
 
     Adapt Loop-muP residual scaling to AttnRes; this is not its optimizer recipe.
-    Groups use their own repeat counts and the total number of distinct layers.
+    Recurrent groups use their own depth and repeat count. Non-recurrent groups
+    retain unit scaling, independently of the reference depth and base scale.
     """
 
-    def __init__(self, config, repeats):
+    def __init__(self, config, repeats, group_depth):
         super().__init__(config, repeats)
-        depth = sum(count for count, _ in config.recur_pattern)
-        self.residual_scale = config.residual_scale_base / (
-            repeats * (depth / config.residual_depth_base) ** 0.5
-        )
+        if repeats > 1:
+            self.residual_scale = config.residual_scale_base / (
+                repeats * (group_depth / config.residual_depth_base) ** 0.5
+            )
 
 
 class EncoderLayer(nn.TransformerEncoderLayer):
@@ -165,7 +166,7 @@ class RecurForCausalLM(PreTrainedModel, GenerationMixin):
         self.layers = nn.ModuleList()
         for count, repeats in config.recur_pattern:
             if config.variant == "scaled_block_attnres":
-                group = nn.ModuleList(ScaledDepthResidualLayer(config, repeats) for _ in range(count))
+                group = nn.ModuleList(ScaledDepthResidualLayer(config, repeats, count) for _ in range(count))
             elif config.variant == "block_attnres":
                 group = nn.ModuleList(DepthResidualLayer(config, repeats) for _ in range(count))
             elif config.variant == "full_attnres":

@@ -67,7 +67,9 @@ output_dir: runs/attnres-50m
 
 ### 带残差缩放的 Block AttnRes
 
-新变体 `scaled_block_attnres`（JSON 中的 `use_model` 为 `RecurrentTransformerScaledBlockAttnRes`）保留 Block AttnRes 的历史聚合，在每次 attention 和 FFN 输出加入历史、累加到块之前乘以 `a / (N * sqrt(L / L_base))`。`N` 是当前组的总执行次数，`L` 是所有组的独立层数之和，`a` 和 `L_base` 分别由 `residual_scale_base`（默认 1）和 `residual_depth_base`（默认 12）设置。每轮使用相同系数，不缩放初始 embedding，也不在循环边界重新缩放历史。
+新变体 `scaled_block_attnres`（JSON 中的 `use_model` 为 `RecurrentTransformerScaledBlockAttnRes`）保留 Block AttnRes 的历史聚合，按组缩放：仅对执行次数大于 1 的组，在每次 attention 和 FFN 输出加入历史、累加到块之前乘以 `a / (N_group * sqrt(L_group / L_base))`。`N_group` 和 `L_group` 是当前组的执行次数和独立层数，不使用全模型层数。`a` 和 `L_base` 分别由 `residual_scale_base`（默认 1）和 `residual_depth_base`（默认 12）设置。执行一次的组始终使用系数 1。每轮使用相同系数，不缩放初始 embedding，也不在循环边界重新缩放历史。
+
+例如 `[[2,1],[6,3],[2,1]]` 配合 `residual_scale_base: 1.0`、`residual_depth_base: 6`，三个组的系数依次为 `1, 1/3, 1`。修改外层数量不会改变中间组的系数。此规则替代此前使用全模型深度的规则；旧目录已复制的代码不会自动更新，使用新代码重新 prepare 到新目录，并把 reference depth 改为目标循环组的参考层数。
 
 示例配置为 12 层、4 轮，每个分支乘以 1/4：
 
