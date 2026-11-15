@@ -1,3 +1,5 @@
+import math
+
 from transformers import PretrainedConfig
 
 
@@ -6,6 +8,7 @@ VARIANTS = {
     "RecurrentTransformerW": "weighted",
     "RecurrentTransformerAttnRes": "full_attnres",
     "RecurrentTransformerBlockAttnRes": "block_attnres",
+    "RecurrentTransformerScaledBlockAttnRes": "scaled_block_attnres",
 }
 
 
@@ -24,6 +27,8 @@ class RecurConfig(PretrainedConfig):
         activation="relu",
         dropout=0.1,
         block_size=None,
+        residual_scale_base=1.0,
+        residual_depth_base=12,
         tie_word_embeddings=False,
         use_cache=False,
         **kwargs,
@@ -58,10 +63,15 @@ class RecurConfig(PretrainedConfig):
             raise ValueError("activation must be 'relu' or 'gelu'")
         if not isinstance(dropout, (int, float)) or not 0 <= dropout <= 1:
             raise ValueError("dropout must be between 0 and 1")
-        if variant == "block_attnres" and block_size is None:
+        if variant in ("block_attnres", "scaled_block_attnres") and block_size is None:
             block_size = 4
         if block_size is not None and (type(block_size) is not int or block_size < 1):
             raise ValueError("block_size must be a positive integer")
+        if (type(residual_scale_base) not in (int, float)
+                or not math.isfinite(residual_scale_base) or residual_scale_base <= 0):
+            raise ValueError("residual_scale_base must be finite and positive")
+        if type(residual_depth_base) is not int or residual_depth_base < 1:
+            raise ValueError("residual_depth_base must be a positive integer")
 
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
         self.variant = variant
@@ -74,6 +84,8 @@ class RecurConfig(PretrainedConfig):
         self.activation = activation
         self.dropout = dropout
         self.block_size = block_size
+        self.residual_scale_base = residual_scale_base
+        self.residual_depth_base = residual_depth_base
         self.use_cache = use_cache
 
     @classmethod
@@ -92,6 +104,8 @@ class RecurConfig(PretrainedConfig):
             activation=data.get("activation", "relu"),
             dropout=data.get("dropout", 0.1),
             block_size=data.get("block_size"),
+            residual_scale_base=data.get("residual_scale_base", 1.0),
+            residual_depth_base=data.get("residual_depth_base", 12),
             **kwargs,
         )
 

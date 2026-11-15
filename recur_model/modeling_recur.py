@@ -71,13 +71,29 @@ class DepthResidualLayer(nn.TransformerEncoderLayer):
         super().__init__(**layer_kwargs(config))
         self.attn_res = nn.ModuleList(AttentionResidual(config.hidden_size) for _ in range(repeats))
         self.ffn_res = nn.ModuleList(AttentionResidual(config.hidden_size) for _ in range(repeats))
+        self.residual_scale = 1.0
 
     def forward(self, history, mask, repeat_index, flash_attention):
         x = self.norm1(self.attn_res[repeat_index](history.sources()))
         attention = temporal_attention(self.self_attn, x, mask, flash_attention)
-        history.append(self.dropout1(attention))
+        history.append(self.residual_scale * self.dropout1(attention))
         x = self.norm2(self.ffn_res[repeat_index](history.sources()))
-        history.append(self._ff_block(x))
+        history.append(self.residual_scale * self._ff_block(x))
+
+
+class ScaledDepthResidualLayer(DepthResidualLayer):
+    """Scale each new branch before block accumulation and depth attention.
+
+    Adapt Loop-muP residual scaling to AttnRes; this is not its optimizer recipe.
+    Groups use their own repeat counts and the total number of distinct layers.
+    """
+
+    def __init__(self, config, repeats):
+        super().__init__(config, repeats)
+        depth = sum(count for count, _ in config.recur_pattern)
+        self.residual_scale = config.residual_scale_base / (
+            repeats * (depth / config.residual_depth_base) ** 0.5
+        )
 
 
 class EncoderLayer(nn.TransformerEncoderLayer):
@@ -148,7 +164,9 @@ class RecurForCausalLM(PreTrainedModel, GenerationMixin):
         super().__init__(config)
         self.layers = nn.ModuleList()
         for count, repeats in config.recur_pattern:
-            if config.variant == "block_attnres":
+            if config.variant == "scaled_block_attnres":
+                group = nn.ModuleList(ScaledDepthResidualLayer(config, repeats) for _ in range(count))
+            elif config.variant == "block_attnres":
                 group = nn.ModuleList(DepthResidualLayer(config, repeats) for _ in range(count))
             elif config.variant == "full_attnres":
                 group = make_encoder(DepthResidualLayer(config, repeats), count)
@@ -160,7 +178,7 @@ class RecurForCausalLM(PreTrainedModel, GenerationMixin):
 
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.position_embedding = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        if config.variant in ("full_attnres", "block_attnres"):
+        if config.variant in ("full_attnres", "block_attnres", "scaled_block_attnres"):
             self.output_attn_res = AttentionResidual(config.hidden_size)
         self.final_norm = nn.LayerNorm(config.hidden_size)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -262,11 +280,11 @@ class RecurForCausalLM(PreTrainedModel, GenerationMixin):
         else:
             mask = router_mask = None
 
-        if self.config.variant in ("full_attnres", "block_attnres"):
-            block_size = self.config.block_size if self.config.variant == "block_attnres" else None
+        if self.config.variant in ("full_attnres", "block_attnres", "scaled_block_attnres"):
+            block_size = self.config.block_size if self.config.variant != "full_attnres" else None
             history = DepthHistory(x, block_size)
             for group, (_, repeats) in zip(self.layers, self.config.recur_pattern):
-                layers = group if self.config.variant == "block_attnres" else group.layers
+                layers = group.layers if self.config.variant == "full_attnres" else group
                 for repeat_index in range(repeats):
                     for layer in layers:
                         layer(history, mask, repeat_index, flash_attention)

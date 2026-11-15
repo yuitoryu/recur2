@@ -65,6 +65,20 @@ output_dir: runs/attnres-50m
 
 `recur_pattern` 每项为 `[独立层数, 执行次数]`。同一组的层权重跨轮共享，Full/Block AttnRes 的查询和归一化参数按轮独立。Block AttnRes 的 `block_size` 以 attention/FFN 子层为单位，块边界跨组连续计数。改变结构后，使用新的输出目录生成配置。
 
+### 带残差缩放的 Block AttnRes
+
+新变体 `scaled_block_attnres`（JSON 中的 `use_model` 为 `RecurrentTransformerScaledBlockAttnRes`）保留 Block AttnRes 的历史聚合，在每次 attention 和 FFN 输出加入历史、累加到块之前乘以 `a / (N * sqrt(L / L_base))`。`N` 是当前组的总执行次数，`L` 是所有组的独立层数之和，`a` 和 `L_base` 分别由 `residual_scale_base`（默认 1）和 `residual_depth_base`（默认 12）设置。每轮使用相同系数，不缩放初始 embedding，也不在循环边界重新缩放历史。
+
+示例配置为 12 层、4 轮，每个分支乘以 1/4：
+
+```bash
+.venv/bin/python -m recur_model.prepare configs/scaled-block-attnres.json artifacts/scaled-block-attnres --cutoff-len 2048
+```
+
+随后将训练 YAML 的 `model_name_or_path` 设为 `artifacts/scaled-block-attnres`。新变体使用普通训练入口；现有独立 Liger 实验入口仍只支持原始 `block_attnres`。
+
+这是将 [Loop-μP](https://arxiv.org/abs/2606.18524) 的分支缩放应用到 Block AttnRes 的实验变体，未实现论文完整的初始化和优化器参数化，也不代表其理论保证适用于 AttnRes 或多组循环。原有模型变体不启用此缩放。
+
 示例沿用 50,257 个 GPT-2 token，并复用 EOS 作为 padding。LLaMA-Factory v0.9.5 的 PT collator 会把所有与 pad ID 相同的目标标为忽略，因此此配置的 loss/PPL 不计 EOS。批量生成请使用左 padding 并传入 `attention_mask`。生成会重算完整上下文，使用 `use_cache=False`。
 
 训练保存的 checkpoint 包含用于重建模型的配置和代码。用 `AutoModelForCausalLM.from_pretrained(checkpoint, trust_remote_code=True)` 直接载入模型。LLaMA-Factory 从 checkpoint 开始一项新训练时，使用 checkpoint 作为 `model_name_or_path` 并设 `train_from_scratch: false`。恢复同一项训练时，保留原 YAML 和训练计划，并用 `resume_from_checkpoint` 指定要恢复的 checkpoint。

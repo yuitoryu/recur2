@@ -1,0 +1,2 @@
+# Optional Block AttnRes experiment dependency. Install into the existing WSL FA2 environment.
+liger-kernel==0.6.2
