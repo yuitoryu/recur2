@@ -5,6 +5,7 @@ from transformers import PretrainedConfig
 
 VARIANTS = {
     "RecurrentTransformer": "plain",
+    "RecurrentTransformerScaled": "scaled_plain",
     "RecurrentTransformerW": "weighted",
     "RecurrentTransformerAttnRes": "full_attnres",
     "RecurrentTransformerBlockAttnRes": "block_attnres",

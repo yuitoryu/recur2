@@ -1,0 +1,12 @@
+{
+  "use_model": "RecurrentTransformerScaled",
+  "d_model": 768,
+  "nhead": 12,
+  "dim_feedforward": 2048,
+  "max_seq_len": 2048,
+  "vocab_size": 50257,
+  "recur_pattern": [[12, 4]],
+  "residual_scale_base": 1.0,
+  "residual_depth_base": 12,
+  "dropout": 0.1
+}

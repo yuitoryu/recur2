@@ -65,6 +65,18 @@ output_dir: runs/attnres-50m
 
 `recur_pattern` 每项为 `[独立层数, 执行次数]`。同一组的层权重跨轮共享，Full/Block AttnRes 的查询和归一化参数按轮独立。Block AttnRes 的 `block_size` 以 attention/FFN 子层为单位，块边界跨组连续计数。改变结构后，使用新的输出目录生成配置。
 
+### 带残差缩放的普通循环模型（无 AttnRes）
+
+`RecurrentTransformerScaled`（`variant: scaled_plain`）使用普通加法残差，不含 residual attention 或历史聚合。每层执行 `x = x + scale * Attention(LN(x))`，再执行 `x = x + scale * FFN(LN(x))`（保留 dropout）。缩放规则与下方 scaled Block AttnRes 相同：循环组使用 `residual_scale_base / (N_group * sqrt(L_group / residual_depth_base))`，执行一次的组系数为 1；每轮系数相同。
+
+示例为 12 层、4 轮，attention 和 FFN 分支系数均为 1/4：
+
+```bash
+.venv/bin/python -m recur_model.prepare configs/scaled-plain.json artifacts/scaled-plain --cutoff-len 2048
+```
+
+将训练 YAML 的 `model_name_or_path` 设为 `artifacts/scaled-plain`，使用普通训练入口。这里只实现 Loop-μP 的分支缩放，未实现完整的初始化和优化器参数化。
+
 ### 带残差缩放的 Block AttnRes
 
 新变体 `scaled_block_attnres`（JSON 中的 `use_model` 为 `RecurrentTransformerScaledBlockAttnRes`）保留 Block AttnRes 的历史聚合，按组缩放：仅对执行次数大于 1 的组，在每次 attention 和 FFN 输出加入历史、累加到块之前乘以 `a / (N_group * sqrt(L_group / L_base))`。`N_group` 和 `L_group` 是当前组的执行次数和独立层数，不使用全模型层数。`a` 和 `L_base` 分别由 `residual_scale_base`（默认 1）和 `residual_depth_base`（默认 12）设置。执行一次的组始终使用系数 1。每轮使用相同系数，不缩放初始 embedding，也不在循环边界重新缩放历史。

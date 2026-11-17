@@ -105,6 +105,27 @@ class EncoderLayer(nn.TransformerEncoderLayer):
         return x + self._ff_block(self.norm2(x))
 
 
+class ScaledEncoderLayer(EncoderLayer):
+    """Ordinary additive residuals with per-group Loop-muP branch scaling."""
+
+    def __init__(self, config, repeats, group_depth):
+        super().__init__(**layer_kwargs(config))
+        self.residual_scale = (
+            config.residual_scale_base / (repeats * (group_depth / config.residual_depth_base) ** 0.5)
+            if repeats > 1 else 1.0
+        )
+
+    def forward(self, src, src_mask=None, src_key_padding_mask=None, is_causal=False, *, flash_attention=None):
+        # Explicit residual additions also avoid the unscaled fused encoder fast path.
+        normalized = self.norm1(src)
+        if flash_attention is None:
+            branch = self._sa_block(normalized, src_mask, src_key_padding_mask, is_causal=is_causal)
+        else:
+            branch = self.dropout1(flash_attention(self.self_attn, normalized))
+        x = src + self.residual_scale * branch
+        return x + self.residual_scale * self._ff_block(self.norm2(x))
+
+
 def make_encoder(layer, count):
     return nn.TransformerEncoder(layer, num_layers=count, enable_nested_tensor=False)
 
@@ -171,6 +192,8 @@ class RecurForCausalLM(PreTrainedModel, GenerationMixin):
                 group = nn.ModuleList(DepthResidualLayer(config, repeats) for _ in range(count))
             elif config.variant == "full_attnres":
                 group = make_encoder(DepthResidualLayer(config, repeats), count)
+            elif config.variant == "scaled_plain":
+                group = make_encoder(ScaledEncoderLayer(config, repeats, count), count)
             elif config.variant == "weighted" and repeats > 1:
                 group = WeightedBlock(config, count, repeats)
             else:
