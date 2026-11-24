@@ -119,6 +119,25 @@ checkpoint="$PWD/runs/attnres-50m"
 
 lm-eval 会读取 checkpoint 的上下文上限，给每道题的四个续写选项计算对数似然。结果 JSON 包含准确率，样本 JSONL 保存每道题的输入、答案和分数。正式评测时去掉 `--limit 5` 并使用独立的输出目录。可以用 `--tasks mmlu ceval-valid cmmlu` 运行这些多选任务，按实验协议设置 few-shot 数。GSM8K 等生成任务需要另行适配，因为 lm-eval 的 HF 生成后端会启用本模型不支持的 KV cache。
 
+## 逐层与逐循环输出评估
+
+在训练时使用的工作目录运行以下命令。两个位置参数分别指向训练配置目录（默认读取其中的 `train.yaml`）和 LLaMA-Factory 的 run 目录。脚本从步数最大的 `checkpoint-<step>` 加载模型结构、权重和 tokenizer，支持 `RecurrentTransformer`、`RecurrentTransformerScaled`、`RecurrentTransformerBlockAttnRes` 和 `RecurrentTransformerScaledBlockAttnRes`。
+
+```bash
+.venv/bin/python -m recur_model.evaluate_outputs configs/my-experiment runs/my-experiment \
+  --batch-size 4 --output-dir runs/my-experiment/analysis
+```
+
+默认 batch size 为 1，验证集按 LLaMA-Factory 预训练规则 packing，每个打包序列算一个样本。`--no-packing` 按单条输入评估。`--train-yaml FILE` 指定训练配置，`--compile` 启用逐层编译。省略 `--output-dir` 时，结果写入 run 目录。
+
+默认同时计算层间和轮间距离。`--no-layers` 只计算轮间距离，输出文件名以 `-loops.jsonl` 结尾。`--no-loops` 只计算层间距离，输出文件名以 `-layers.jsonl` 结尾。
+
+`output_differences-<step>.jsonl` 每行包含一个样本的序号、数据集名、有效 token 数及比较结果。组、轮、层序号从 1 开始。每组内记录同一轮相邻层（`adjacent_layers`）、相邻轮末（`adjacent_loops`）和相对首轮末（`from_first_loop`）的变化。`tokenwise` 对每个有效 token 计算相对 L2 距离，`whole` 对整个有效序列计算相对 Frobenius 距离，两者均以较早输出的范数加 `1e-8` 作分母。
+
+两种 Block AttnRes 的评估要求 `recur_pattern=[[L,R]]`，每轮执行全部 L 层。`block_size` 必须为偶数，且 L 能被 `block_size / 2` 整除，确保每轮封闭完整的块。脚本在加载权重和验证集之前检查这三个条件。
+
+逐层取写入历史的 FFN 分支张量，包含模型的残差缩放。逐轮取下一轮首层 `norm1` 的输入，即该层用自己的 AttnRes 查询读出的张量。最后一轮取 `final_norm` 的输入。`--compile` 在这两种模型上编译自注意力和 FFN 的线性层，采集点在编译区域外。
+
 ## FlashAttention-2
 
 在 WSL 安装与本项目 PyTorch 匹配的官方 wheel，然后在 LLaMA-Factory YAML 中设置 `flash_attn: fa2` 和 `bf16: true`。也可以在 CUDA 上使用 `fp16: true`。

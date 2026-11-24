@@ -186,7 +186,9 @@ class RecurForCausalLM(PreTrainedModel, GenerationMixin):
         super().__init__(config)
         self.layers = nn.ModuleList()
         for count, repeats in config.recur_pattern:
-            if config.variant == "scaled_block_attnres":
+            if config.variant == "vanilla":
+                group = make_encoder(nn.TransformerEncoderLayer(**layer_kwargs(config)), count)
+            elif config.variant == "scaled_block_attnres":
                 group = nn.ModuleList(ScaledDepthResidualLayer(config, repeats, count) for _ in range(count))
             elif config.variant == "block_attnres":
                 group = nn.ModuleList(DepthResidualLayer(config, repeats) for _ in range(count))
@@ -292,7 +294,7 @@ class RecurForCausalLM(PreTrainedModel, GenerationMixin):
         x = x + self.position_embedding(position_ids)
 
         flash_attention = None
-        if self.config._attn_implementation == "flash_attention_2":
+        if self.config.variant != "vanilla" and self.config._attn_implementation == "flash_attention_2":
             # The Transformers backend handles unpadding for nonempty sequences.
             # Preserve the finite masked-attention path for batches with an empty row.
             if visible is None or bool(visible.all()):
@@ -338,6 +340,155 @@ class RecurForCausalLM(PreTrainedModel, GenerationMixin):
                 reduction="sum",
                 ignore_index=-100,
             )
+            loss = total / targets.ne(-100).sum().clamp_min(1)
+
+        if not (return_dict if return_dict is not None else self.config.use_return_dict):
+            return (logits,) if loss is None else (loss, logits)
+        return CausalLMOutput(loss=loss, logits=logits)
+
+
+class vanilla(RecurForCausalLM):
+    """Causal language model with independent PyTorch Transformer encoder layers."""
+
+    _supports_flash_attn = False
+
+    def __init__(self, config):
+        if config.variant != "vanilla":
+            raise ValueError("vanilla requires RecurConfig(variant='vanilla')")
+        super().__init__(config)
+
+
+def _liger_ops():
+    try:
+        from liger_kernel.ops.experimental.embedding import LigerEmbeddingFunction
+        from liger_kernel.transformers import functional
+    except ImportError as exc:
+        raise ImportError("Install requirements-liger-wsl.txt to use the Liger CUDA kernels.") from exc
+    return functional, LigerEmbeddingFunction.apply
+
+
+def _liger_embedding(kernel, embedding, indices):
+    if (type(embedding) is not nn.Embedding or indices.device != embedding.weight.device or indices.numel() == 0
+            or indices.dtype not in (torch.int32, torch.int64) or embedding.padding_idx is not None):
+        return embedding(indices)
+    # The experimental kernel requires in-range indices.
+    torch._assert_async(((indices >= 0) & (indices < embedding.num_embeddings)).all(), "Embedding index out of range")
+    return kernel(embedding.weight, indices)
+
+
+def _liger_norm(ops, norm, x):
+    return ops.liger_layer_norm(x, norm.weight, norm.bias, norm.eps)
+
+
+def _liger_attn_res(ops, residual, sources):
+    values = torch.stack(sources)
+    keys = ops.liger_rms_norm(values.float(), residual.norm.weight, residual.norm.eps, in_place=False)
+    scores = (keys * residual.query.float()).sum(dim=-1)
+    if scores.shape[0] <= 65536:
+        weights = ops.liger_softmax(scores.movedim(0, -1)).movedim(-1, 0)
+    else:
+        weights = scores.softmax(dim=0)
+    return (weights.to(values.dtype).unsqueeze(-1) * values).sum(dim=0)
+
+
+@torch.compiler.disable
+def _liger_cross_entropy_sum(cross_entropy, scores, targets):
+    # Liger 0.6.2 overwrites its input with gradients. Keep the returned logits intact.
+    scores = scores.to(dtype=torch.float32, copy=True, memory_format=torch.contiguous_format).flatten(0, 1)
+    return cross_entropy(scores, targets, reduction="sum", ignore_index=-100)
+
+
+class RecurrentTransformerScaledBlockAttnResLiger(RecurForCausalLM):
+    """Scaled Block AttnRes with standalone Liger kernels and full logits."""
+
+    def __init__(self, config):
+        if config.variant != "scaled_block_attnres":
+            raise ValueError("RecurrentTransformerScaledBlockAttnResLiger requires variant='scaled_block_attnres'.")
+        super().__init__(config)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        labels=None,
+        inputs_embeds=None,
+        use_cache=None,
+        cache_position=None,
+        return_dict=None,
+    ):
+        if use_cache:
+            raise ValueError("RecurForCausalLM requires use_cache=False")
+        if (input_ids is None) == (inputs_embeds is None):
+            raise ValueError("Pass exactly one of input_ids or inputs_embeds")
+        inputs = input_ids if inputs_embeds is None else inputs_embeds
+        if (not inputs.is_cuda or not inputs.numel() or self.dtype == torch.float64
+                or inputs.dtype == torch.float64 or self.config.hidden_size > 65536):
+            return super().forward(
+                input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids,
+                labels=labels, inputs_embeds=inputs_embeds, use_cache=use_cache,
+                cache_position=cache_position, return_dict=return_dict,
+            )
+
+        ops, embedding_kernel = _liger_ops()
+        x = inputs_embeds
+        if x is None:
+            x = _liger_embedding(embedding_kernel, self.token_embedding, input_ids)
+        batch, length, _ = x.shape
+        if not 1 <= length <= self.config.max_position_embeddings:
+            raise ValueError(f"Sequence length must be between 1 and {self.config.max_position_embeddings}")
+
+        visible = None
+        if attention_mask is not None:
+            if attention_mask.shape != (batch, length):
+                raise ValueError("attention_mask must have shape (batch, sequence)")
+            visible = attention_mask.to(device=x.device, dtype=torch.bool)
+        if position_ids is None:
+            if visible is None:
+                position_ids = torch.arange(length, device=x.device)
+            else:
+                position_ids = (visible.long().cumsum(dim=-1) - 1).clamp_min(0)
+        x = x + _liger_embedding(embedding_kernel, self.position_embedding, position_ids)
+
+        flash_attention = None
+        if self.config._attn_implementation == "flash_attention_2":
+            if visible is None or bool(visible.all()):
+                flash_attention = partial(self._flash_self_attention, attention_mask=None)
+            elif bool(visible.any(dim=-1).all()):
+                flash_attention = partial(self._flash_self_attention, attention_mask=visible)
+        mask = None
+        if flash_attention is None:
+            mask, _ = attention_masks(length, x.device, visible, self.config.num_attention_heads)
+
+        history = DepthHistory(x, self.config.block_size)
+        for group, (_, repeats) in zip(self.layers, self.config.recur_pattern):
+            for repeat_index in range(repeats):
+                for layer in group:
+                    x = _liger_attn_res(ops, layer.attn_res[repeat_index], history.sources())
+                    x = _liger_norm(ops, layer.norm1, x)
+                    attention = temporal_attention(layer.self_attn, x, mask, flash_attention)
+                    history.append(layer.residual_scale * layer.dropout1(attention))
+                    x = _liger_attn_res(ops, layer.ffn_res[repeat_index], history.sources())
+                    x = _liger_norm(ops, layer.norm2, x)
+                    history.append(layer.residual_scale * layer._ff_block(x))
+
+        x = _liger_attn_res(ops, self.output_attn_res, history.sources())
+        logits = self.lm_head(_liger_norm(ops, self.final_norm, x))
+        loss = None
+        if labels is not None:
+            if labels.shape != (batch, length):
+                raise ValueError("labels must have shape (batch, sequence)")
+            targets = labels[:, 1:].to(logits.device)
+            if visible is not None:
+                targets = targets.masked_fill(~(visible[:, :-1] & visible[:, 1:]), -100)
+            targets = targets.reshape(-1)
+            scores = logits[:, :-1, :]
+            if scores.numel() and targets.dtype == torch.long:
+                total = _liger_cross_entropy_sum(ops.liger_cross_entropy, scores, targets)
+            else:
+                if scores.dtype in (torch.float16, torch.bfloat16):
+                    scores = scores.float()
+                total = F.cross_entropy(scores.flatten(0, 1), targets, reduction="sum", ignore_index=-100)
             loss = total / targets.ne(-100).sum().clamp_min(1)
 
         if not (return_dict if return_dict is not None else self.config.use_return_dict):

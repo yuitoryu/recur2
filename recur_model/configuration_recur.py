@@ -3,7 +3,11 @@ import math
 from transformers import PretrainedConfig
 
 
+SCALED_BLOCK_ATTNRES_LIGER = "RecurrentTransformerScaledBlockAttnResLiger"
+
+
 VARIANTS = {
+    "vanilla": "vanilla",
     "RecurrentTransformer": "plain",
     "RecurrentTransformerScaled": "scaled_plain",
     "RecurrentTransformerW": "weighted",
@@ -58,6 +62,8 @@ class RecurConfig(PretrainedConfig):
                 or any(type(value) is not int or value < 1 for value in group)
             ):
                 raise ValueError("Each recur_pattern group must contain two positive integers")
+        if variant == "vanilla" and any(repeats != 1 for _, repeats in recur_pattern):
+            raise ValueError("vanilla requires one pass per group, e.g. [[18, 1]]")
         if variant == "weighted" and hidden_size < 12 and any(repeats > 1 for _, repeats in recur_pattern):
             raise ValueError("A weighted recurrent group requires hidden_size >= 12")
         if activation not in ("relu", "gelu"):
@@ -91,9 +97,10 @@ class RecurConfig(PretrainedConfig):
 
     @classmethod
     def from_legacy(cls, data, **kwargs):
-        variant = VARIANTS.get(data.get("use_model"))
+        use_model = data.get("use_model")
+        variant = "scaled_block_attnres" if use_model == SCALED_BLOCK_ATTNRES_LIGER else VARIANTS.get(use_model)
         if variant is None:
-            raise ValueError(f"Unknown use_model: {data.get('use_model')!r}")
+            raise ValueError(f"Unknown use_model: {use_model!r}")
         return cls(
             variant=variant,
             hidden_size=data["d_model"],

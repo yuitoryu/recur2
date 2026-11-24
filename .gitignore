@@ -6,22 +6,38 @@ __pycache__/
 .env
 .env.*
 !.env.example
+/hf_*.txt
 
 # Datasets and training outputs
 /data/
 /artifact/data/
 /artifacts/
 /runs/
+/runs~/
 *.parquet
 *.safetensors
 *.log
 
+# Local build outputs and config archive
+/main.exp
+/main.lib
+/main.obj
+/configs2.zip
+
+# Local configurations
+/configs/
+/configs2/
+
 # Local tests and benchmarks
 /tests/
-/configs/smoke/
 /examples/smoke/
 /recur_model/smoke.py
 /recur_model/benchmark_fa2.py
 
 # Local task notes
 /mission.md
+
+# Other stuff
+*.zip
+*.pdf
+*.txt

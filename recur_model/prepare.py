@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 
 from transformers import AutoTokenizer
 
-from .configuration_recur import RecurConfig
+from .configuration_recur import RecurConfig, SCALED_BLOCK_ATTNRES_LIGER
 
 
 def prepare_model(source, destination, *, tokenizer_source, cutoff_len=None):
@@ -15,7 +15,8 @@ def prepare_model(source, destination, *, tokenizer_source, cutoff_len=None):
     if destination.exists():
         raise FileExistsError(f"Model directory already exists: {destination}")
 
-    config = RecurConfig.from_legacy(json.loads(source.read_text(encoding="utf-8-sig")))
+    model_spec = json.loads(source.read_text(encoding="utf-8-sig"))
+    config = RecurConfig.from_legacy(model_spec)
     if cutoff_len is not None:
         config.validate_cutoff(cutoff_len)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
@@ -29,10 +30,15 @@ def prepare_model(source, destination, *, tokenizer_source, cutoff_len=None):
     config.pad_token_id = tokenizer.pad_token_id
     config.eos_token_id = tokenizer.eos_token_id
     config.bos_token_id = tokenizer.bos_token_id
-    config.architectures = ["RecurForCausalLM"]
+    model_class = "RecurForCausalLM"
+    if model_spec["use_model"] == SCALED_BLOCK_ATTNRES_LIGER:
+        model_class = SCALED_BLOCK_ATTNRES_LIGER
+    elif config.variant == "vanilla":
+        model_class = "vanilla"
+    config.architectures = [model_class]
     config.auto_map = {
         "AutoConfig": "configuration_recur.RecurConfig",
-        "AutoModelForCausalLM": "modeling_recur.RecurForCausalLM",
+        "AutoModelForCausalLM": f"modeling_recur.{model_class}",
     }
 
     destination.parent.mkdir(parents=True, exist_ok=True)
