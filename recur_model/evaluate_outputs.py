@@ -81,13 +81,22 @@ def validation_data(settings, checkpoint, tokenizer, packing):
     return validation if isinstance(validation, dict) else {"validation": validation}
 
 
-def distances(earlier, later, mask):
-    """Return [batch, tokens + 1], with the whole-sample distance in the last column."""
+def output_metrics(earlier, later, mask):
+    """Return distance and cosine rows, each ending with its whole-sample value."""
     earlier = earlier.float()
-    delta = (later.float() - earlier).norm(dim=-1).masked_fill(~mask, 0)
+    later = later.float()
+    delta = (later - earlier).norm(dim=-1).masked_fill(~mask, 0)
     base = earlier.norm(dim=-1).masked_fill(~mask, 0)
-    whole = delta.norm(dim=-1, keepdim=True) / (base.norm(dim=-1, keepdim=True) + 1e-8)
-    return torch.cat((delta / (base + 1e-8), whole), dim=-1)
+    base_whole = base.norm(dim=-1, keepdim=True)
+    whole = delta.norm(dim=-1, keepdim=True) / (base_whole + 1e-8)
+    distance = torch.cat((delta / (base + 1e-8), whole), dim=-1)
+
+    dot = (earlier * later).sum(dim=-1).masked_fill(~mask, 0)
+    later_norm = later.norm(dim=-1).masked_fill(~mask, 0)
+    numerator = torch.cat((dot, dot.sum(dim=-1, keepdim=True)), dim=-1)
+    denominator = torch.cat((base * later_norm, base_whole * later_norm.norm(dim=-1, keepdim=True)), dim=-1)
+    cosine = torch.where(denominator == 0, 0.0, numerator / denominator)
+    return torch.stack((distance, cosine), dim=1)
 
 
 @torch.inference_mode()
@@ -110,10 +119,10 @@ def collect_batch(model, batch, *, measure_layers=True, measure_loops=True):
         if repeat == 1:
             first_loop = output
         else:
-            adjacent = distances(previous_loop, output, mask)
+            adjacent = output_metrics(previous_loop, output, mask)
             position = dict(kind="adjacent_loops", group=group, from_loop=repeat - 1, to_loop=repeat)
             comparisons.append((position, adjacent))
-            from_first = adjacent if repeat == 2 else distances(first_loop, output, mask)
+            from_first = adjacent if repeat == 2 else output_metrics(first_loop, output, mask)
             comparisons.append((dict(kind="from_first_loop", group=group, from_loop=1, to_loop=repeat), from_first))
         previous_loop = output
 
@@ -131,7 +140,7 @@ def collect_batch(model, batch, *, measure_layers=True, measure_loops=True):
                 output = scale * output
             if layer > 1:
                 position = dict(kind="adjacent_layers", group=group, loop=repeat, from_layer=layer - 1, to_layer=layer)
-                comparisons.append((position, distances(previous_layer, output, mask)))
+                comparisons.append((position, output_metrics(previous_layer, output, mask)))
             previous_layer = output
         if measure_loops and layer == depth:
             if block:
@@ -161,8 +170,9 @@ def collect_batch(model, batch, *, measure_layers=True, measure_loops=True):
         return rows
     locations, measurements = zip(*comparisons)
     for position, values in zip(locations, torch.stack(measurements).cpu()):
-        for row, m, sample in zip(rows, visible, values):
-            row["comparisons"].append(dict(**position, tokenwise=sample[:-1][m].tolist(), whole=sample[-1].item()))
+        for row, m, (distance, cosine) in zip(rows, visible, values):
+            row["comparisons"].append(dict(**position, tokenwise=distance[:-1][m].tolist(), whole=distance[-1].item(),
+                                           tokenwise_cosine=cosine[:-1][m].tolist(), whole_cosine=cosine[-1].item()))
     return rows
 
 
@@ -175,10 +185,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--compile", action="store_true", help="Compile layer computations outside the capture hooks")
     parser.add_argument("--no-packing", action="store_true")
-    parser.add_argument("--layers", action=argparse.BooleanOptionalAction, default=True,
-                        help="Measure differences between adjacent layers (default: enabled)")
-    parser.add_argument("--loops", action=argparse.BooleanOptionalAction, default=True,
-                        help="Measure adjacent and first-loop differences (default: enabled)")
+    parser.add_argument("--layers", action="store_true", help="Compare adjacent layers")
+    parser.add_argument("--loops", action="store_true", help="Compare loop outputs with the previous and first loops")
     args = parser.parse_args()
     if args.batch_size < 1:
         parser.error("--batch-size must be positive")
